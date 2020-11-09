@@ -1,1 +1,1 @@
-gunicorn -w 4 app_rest:app
+web: gunicorn app_rest:app
