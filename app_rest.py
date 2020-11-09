@@ -5,5 +5,6 @@ import bottle
 import app_rest_modules
 
 if __name__ == "__main__":
-    app_rest_modules.init()
-    bottle.run()
+    run(host='localhost', port=8080)
+
+app = bottle.default_app()
