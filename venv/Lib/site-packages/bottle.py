@@ -9,14 +9,14 @@ Python Standard Library.
 
 Homepage and documentation: http://bottlepy.org/
 
-Copyright (c) 2016, Marcel Hellkamp.
+Copyright (c) 2013, Marcel Hellkamp.
 License: MIT (see LICENSE for details)
 """
 
 from __future__ import with_statement
 
 __author__ = 'Marcel Hellkamp'
-__version__ = '0.12.18'
+__version__ = '0.12.8'
 __license__ = 'MIT'
 
 # The gevent server adapter needs to patch some modules before they are imported
@@ -35,8 +35,8 @@ if __name__ == '__main__':
     if _cmd_options.server and _cmd_options.server.startswith('gevent'):
         import gevent.monkey; gevent.monkey.patch_all()
 
-import base64, cgi, email.utils, functools, hmac, itertools, mimetypes,\
-        os, re, subprocess, sys, tempfile, threading, time, warnings, hashlib
+import base64, cgi, email.utils, functools, hmac, imp, itertools, mimetypes,\
+        os, re, subprocess, sys, tempfile, threading, time, warnings
 
 from datetime import date as datedate, datetime, timedelta
 from tempfile import TemporaryFile
@@ -84,12 +84,7 @@ if py3k:
     from urllib.parse import urlencode, quote as urlquote, unquote as urlunquote
     urlunquote = functools.partial(urlunquote, encoding='latin1')
     from http.cookies import SimpleCookie
-    if py >= (3, 3, 0):
-        from collections.abc import MutableMapping as DictMixin
-        from types import ModuleType as new_module
-    else:
-        from collections import MutableMapping as DictMixin
-        from imp import new_module
+    from collections import MutableMapping as DictMixin
     import pickle
     from io import BytesIO
     from configparser import ConfigParser
@@ -107,7 +102,6 @@ else: # 2.x
     from Cookie import SimpleCookie
     from itertools import imap
     import cPickle as pickle
-    from imp import new_module
     from StringIO import StringIO as BytesIO
     from ConfigParser import SafeConfigParser as ConfigParser
     if py25:
@@ -1404,36 +1398,28 @@ class BaseRequest(object):
         self.environ['bottle.request.ext.%s'%name] = value
 
 
-def _hkey(key):
-    if '\n' in key or '\r' in key or '\0' in key:
-        raise ValueError("Header names must not contain control characters: %r" % key)
-    return key.title().replace('_', '-')
 
 
-def _hval(value):
-    value = tonat(value)
-    if '\n' in value or '\r' in value or '\0' in value:
-        raise ValueError("Header value must not contain control characters: %r" % value)
-    return value
-
+def _hkey(s):
+    return s.title().replace('_','-')
 
 
 class HeaderProperty(object):
-    def __init__(self, name, reader=None, writer=None, default=''):
+    def __init__(self, name, reader=None, writer=str, default=''):
         self.name, self.default = name, default
         self.reader, self.writer = reader, writer
         self.__doc__ = 'Current value of the %r header.' % name.title()
 
     def __get__(self, obj, cls):
         if obj is None: return self
-        value = obj.get_header(self.name, self.default)
+        value = obj.headers.get(self.name, self.default)
         return self.reader(value) if self.reader else value
 
     def __set__(self, obj, value):
-        obj[self.name] = self.writer(value) if self.writer else value
+        obj.headers[self.name] = self.writer(value)
 
     def __delete__(self, obj):
-        del obj[self.name]
+        del obj.headers[self.name]
 
 
 class BaseResponse(object):
@@ -1540,7 +1526,7 @@ class BaseResponse(object):
     def __contains__(self, name): return _hkey(name) in self._headers
     def __delitem__(self, name):  del self._headers[_hkey(name)]
     def __getitem__(self, name):  return self._headers[_hkey(name)][-1]
-    def __setitem__(self, name, value): self._headers[_hkey(name)] = [_hval(value)]
+    def __setitem__(self, name, value): self._headers[_hkey(name)] = [str(value)]
 
     def get_header(self, name, default=None):
         ''' Return the value of a previously defined header. If there is no
@@ -1550,11 +1536,11 @@ class BaseResponse(object):
     def set_header(self, name, value):
         ''' Create a new response header, replacing any previously defined
             headers with the same name. '''
-        self._headers[_hkey(name)] = [_hval(value)]
+        self._headers[_hkey(name)] = [str(value)]
 
     def add_header(self, name, value):
         ''' Add an additional response header, not removing duplicates. '''
-        self._headers.setdefault(_hkey(name), []).append(_hval(value))
+        self._headers.setdefault(_hkey(name), []).append(str(value))
 
     def iter_headers(self):
         ''' Yield (header, value) tuples, skipping headers that are not
@@ -1563,7 +1549,7 @@ class BaseResponse(object):
 
     @property
     def headerlist(self):
-        """ WSGI conform list of (header, value) tuples. """
+        ''' WSGI conform list of (header, value) tuples. '''
         out = []
         headers = list(self._headers.items())
         if 'Content-Type' not in self._headers:
@@ -1571,12 +1557,10 @@ class BaseResponse(object):
         if self._status_code in self.bad_headers:
             bad_headers = self.bad_headers[self._status_code]
             headers = [h for h in headers if h[0] not in bad_headers]
-        out += [(name, val) for (name, vals) in headers for val in vals]
+        out += [(name, val) for name, vals in headers for val in vals]
         if self._cookies:
             for c in self._cookies.values():
-                out.append(('Set-Cookie', _hval(c.OutputString())))
-        if py3k:
-            out = [(k, v.encode('utf8').decode('latin1')) for (k, v) in out]
+                out.append(('Set-Cookie', c.OutputString()))
         return out
 
     content_type = HeaderProperty('Content-Type')
@@ -1787,7 +1771,7 @@ class _ImportRedirect(object):
         ''' Create a virtual package that redirects imports (see PEP 302). '''
         self.name = name
         self.impmask = impmask
-        self.module = sys.modules.setdefault(name, new_module(name))
+        self.module = sys.modules.setdefault(name, imp.new_module(name))
         self.module.__dict__.update({'__file__': __file__, '__path__': [],
                                     '__all__': [], '__loader__': self})
         sys.meta_path.append(self)
@@ -1937,6 +1921,7 @@ class FormsDict(MultiDict):
             return super(FormsDict, self).__getattr__(name)
         return self.getunicode(name, default=default)
 
+
 class HeaderDict(MultiDict):
     """ A case-insensitive version of :class:`MultiDict` that defaults to
         replace the old value instead of appending it. """
@@ -1948,14 +1933,15 @@ class HeaderDict(MultiDict):
     def __contains__(self, key): return _hkey(key) in self.dict
     def __delitem__(self, key): del self.dict[_hkey(key)]
     def __getitem__(self, key): return self.dict[_hkey(key)][-1]
-    def __setitem__(self, key, value): self.dict[_hkey(key)] = [_hval(value)]
-    def append(self, key, value): self.dict.setdefault(_hkey(key), []).append(_hval(value))
-    def replace(self, key, value): self.dict[_hkey(key)] = [_hval(value)]
+    def __setitem__(self, key, value): self.dict[_hkey(key)] = [str(value)]
+    def append(self, key, value):
+        self.dict.setdefault(_hkey(key), []).append(str(value))
+    def replace(self, key, value): self.dict[_hkey(key)] = [str(value)]
     def getall(self, key): return self.dict.get(_hkey(key)) or []
     def get(self, key, default=None, index=-1):
         return MultiDict.get(self, _hkey(key), default, index)
     def filter(self, names):
-        for name in (_hkey(n) for n in names):
+        for name in [_hkey(n) for n in names]:
             if name in self.dict:
                 del self.dict[name]
 
@@ -2121,7 +2107,7 @@ class ConfigDict(dict):
             if not isinstance(source, dict):
                 raise TypeError('Source is not a dict (r)' % type(key))
             for key, value in source.items():
-                if not isinstance(key, basestring):
+                if not isinstance(key, str):
                     raise TypeError('Key is not a string (%r)' % type(key))
                 full_key = prefix + '.' + key if prefix else key
                 if isinstance(value, dict):
@@ -2137,7 +2123,7 @@ class ConfigDict(dict):
             namespace. Apart from that it works just as the usual dict.update().
             Example: ``update('some.namespace', key='value')`` '''
         prefix = ''
-        if a and isinstance(a[0], basestring):
+        if a and isinstance(a[0], str):
             prefix = a[0].strip('.') + '.'
             a = a[1:]
         for key, value in dict(*a, **ka).items():
@@ -2149,7 +2135,7 @@ class ConfigDict(dict):
         return self[key]
 
     def __setitem__(self, key, value):
-        if not isinstance(key, basestring):
+        if not isinstance(key, str):
             raise TypeError('Key has type %r (not a string)' % type(key))
 
         value = self.meta_get(key, 'filter', lambda x: x)(value)
@@ -2362,10 +2348,6 @@ class FileUpload(object):
 
     content_type = HeaderProperty('Content-Type')
     content_length = HeaderProperty('Content-Length', reader=int, default=-1)
-
-    def get_header(self, name, default=None):
-        """ Return the value of a header within the mulripart part. """
-        return self.headers.get(name, default)
 
     @cached_property
     def filename(self):
@@ -2603,7 +2585,7 @@ def _lscmp(a, b):
 def cookie_encode(data, key):
     ''' Encode and sign a pickle-able object. Return a (byte) string '''
     msg = base64.b64encode(pickle.dumps(data, -1))
-    sig = base64.b64encode(hmac.new(tob(key), msg, digestmod=hashlib.md5).digest())
+    sig = base64.b64encode(hmac.new(tob(key), msg).digest())
     return tob('!') + sig + tob('?') + msg
 
 
@@ -2612,7 +2594,7 @@ def cookie_decode(data, key):
     data = tob(data)
     if cookie_is_encoded(data):
         sig, msg = data.split(tob('?'), 1)
-        if _lscmp(sig[1:], base64.b64encode(hmac.new(tob(key), msg, digestmod=hashlib.md5).digest())):
+        if _lscmp(sig[1:], base64.b64encode(hmac.new(tob(key), msg).digest())):
             return pickle.loads(base64.b64decode(msg))
     return None
 
@@ -2912,16 +2894,14 @@ class GeventServer(ServerAdapter):
         * See gevent.wsgi.WSGIServer() documentation for more options.
     """
     def run(self, handler):
-        from gevent import pywsgi, local
+        from gevent import wsgi, pywsgi, local
         if not isinstance(threading.local(), local.local):
             msg = "Bottle requires gevent.monkey.patch_all() (before import)"
             raise RuntimeError(msg)
-        if self.options.pop('fast', None):
-            depr('The "fast" option has been deprecated and removed by Gevent.')
-        if self.quiet:
-            self.options['log'] = None
+        if not self.options.pop('fast', None): wsgi = pywsgi
+        self.options['log'] = None if self.quiet else 'default'
         address = (self.host, self.port)
-        server = pywsgi.WSGIServer(address, handler, **self.options)
+        server = wsgi.WSGIServer(address, handler, **self.options)
         if 'BOTTLE_CHILD' in os.environ:
             import signal
             signal.signal(signal.SIGINT, lambda s, f: server.stop())
@@ -3164,7 +3144,7 @@ class FileCheckerThread(threading.Thread):
         files = dict()
 
         for module in list(sys.modules.values()):
-            path = getattr(module, '__file__', '') or ''
+            path = getattr(module, '__file__', '')
             if path[-4:] in ('.pyo', '.pyc'): path = path[:-1]
             if path and exists(path): files[path] = mtime(path)
 
@@ -3428,31 +3408,26 @@ class StplParser(object):
     _re_cache = {} #: Cache for compiled re patterns
     # This huge pile of voodoo magic splits python code into 8 different tokens.
     # 1: All kinds of python strings (trust me, it works)
-    _re_tok = '([urbURB]?(?:\'\'(?!\')|""(?!")|\'{6}|"{6}' \
+    _re_tok = '((?m)[urbURB]?(?:\'\'(?!\')|""(?!")|\'{6}|"{6}' \
                '|\'(?:[^\\\\\']|\\\\.)+?\'|"(?:[^\\\\"]|\\\\.)+?"' \
                '|\'{3}(?:[^\\\\]|\\\\.|\\n)+?\'{3}' \
                '|"{3}(?:[^\\\\]|\\\\.|\\n)+?"{3}))'
     _re_inl = _re_tok.replace('|\\n','') # We re-use this string pattern later
     # 2: Comments (until end of line, but not the newline itself)
     _re_tok += '|(#.*)'
-    # 3,4: Open and close grouping tokens
-    _re_tok += '|([\\[\\{\\(])'
-    _re_tok += '|([\\]\\}\\)])'
-    # 5,6: Keywords that start or continue a python block (only start of line)
+    # 3,4: Keywords that start or continue a python block (only start of line)
     _re_tok += '|^([ \\t]*(?:if|for|while|with|try|def|class)\\b)' \
                '|^([ \\t]*(?:elif|else|except|finally)\\b)'
-    # 7: Our special 'end' keyword (but only if it stands alone)
+    # 5: Our special 'end' keyword (but only if it stands alone)
     _re_tok += '|((?:^|;)[ \\t]*end[ \\t]*(?=(?:%(block_close)s[ \\t]*)?\\r?$|;|#))'
-    # 8: A customizable end-of-code-block template token (only end of line)
-    _re_tok += '|(%(block_close)s[ \\t]*(?=\\r?$))'
-    # 9: And finally, a single newline. The 10th token is 'everything else'
+    # 6: A customizable end-of-code-block template token (only end of line)
+    _re_tok += '|(%(block_close)s[ \\t]*(?=$))'
+    # 7: And finally, a single newline. The 8th token is 'everything else'
     _re_tok += '|(\\r?\\n)'
-
     # Match the start tokens of code areas in a template
     _re_split = '(?m)^[ \t]*(\\\\?)((%(line_start)s)|(%(block_start)s))(%%?)'
     # Match inline statements (may contain python strings)
-    _re_inl = '(?m)%%(inline_start)s((?:%s|[^\'"\n]*?)+)%%(inline_end)s' % _re_inl
-    _re_tok = '(?m)' + _re_tok
+    _re_inl = '%%(inline_start)s((?:%s|[^\'"\n]*?)+)%%(inline_end)s' % _re_inl
 
     default_syntax = '<% %> % {{ }}'
 
@@ -3462,7 +3437,6 @@ class StplParser(object):
         self.code_buffer, self.text_buffer = [], []
         self.lineno, self.offset = 1, 0
         self.indent, self.indent_mod = 0, 0
-        self.paren_depth = 0
 
     def get_syntax(self):
         ''' Tokens as a space separated string (default: <% %> % {{ }}) '''
@@ -3519,8 +3493,8 @@ class StplParser(object):
                 return
             code_line += self.source[self.offset:self.offset+m.start()]
             self.offset += m.end()
-            _str, _com, _po, _pc, _blk1, _blk2, _end, _cend, _nl = m.groups()
-            if (code_line or self.paren_depth > 0) and (_blk1 or _blk2): # a if b else c
+            _str, _com, _blk1, _blk2, _end, _cend, _nl = m.groups()
+            if code_line and (_blk1 or _blk2): # a if b else c
                 code_line += _blk1 or _blk2
                 continue
             if _str:    # Python string
@@ -3529,15 +3503,6 @@ class StplParser(object):
                 comment = _com
                 if multiline and _com.strip().endswith(self._tokens[1]):
                     multiline = False # Allow end-of-block in comments
-            elif _po:  # open parenthesis
-                self.paren_depth += 1
-                code_line += _po
-            elif _pc:  # close parenthesis
-                if self.paren_depth > 0:
-                    # we could check for matching parentheses here, but it's
-                    # easier to leave that to python - just check counts
-                    self.paren_depth -= 1
-                code_line += _pc
             elif _blk1: # Start-block keyword (if/for/while/def/try/...)
                 code_line, self.indent_mod = _blk1, -1
                 self.indent += 1
