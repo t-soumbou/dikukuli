@@ -1,6 +1,7 @@
 # Web app entry point
 
 import bottle
+import os
 import app_rest_modules
 
 if __name__ == "__main__":
