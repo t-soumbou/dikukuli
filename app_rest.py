@@ -5,4 +5,4 @@ import app_rest_modules
 
 if __name__ == "__main__":
     app_rest_modules.init()
-    run()
+    bottle.run(port=int(os.environ.get("PORT", 5000)))
